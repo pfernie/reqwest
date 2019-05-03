@@ -145,6 +145,17 @@ impl<'a, R: CookieStorageReader> CookieStorageReader for &'a R {
     }
 }
 
+/// A default session, which stores no cookies
+#[derive(Default, Debug)]
+pub struct NullSession;
+
+impl CookieStorageReader for NullSession {
+    fn get_request_cookies(&self, _: &url::Url) -> Box<dyn Iterator<Item = &cookie_crate::Cookie<'static>> + '_> { Box::new(vec![].into_iter()) }
+}
+impl CookieStorage for NullSession {
+    fn store_response_cookies(&mut self, _: impl Iterator<Item = cookie_crate::Cookie<'static>>, _: &url::Url) { }
+}
+
 impl CookieStorageReader for cookie_store::CookieStore {
     fn get_request_cookies(&self, url: &url::Url) -> Box<dyn Iterator<Item = &cookie_crate::Cookie<'static>> + '_> {
         Box::new(self.get_request_cookies(url))
@@ -153,15 +164,5 @@ impl CookieStorageReader for cookie_store::CookieStore {
 impl CookieStorage for cookie_store::CookieStore {
     fn store_response_cookies(&mut self, cookies: impl Iterator<Item = cookie_crate::Cookie<'static>>, url: &url::Url) {
         self.store_response_cookies(cookies, url);
-    }
-}
-
-/// A persistent cookie store that provides session support.
-#[derive(Default)]
-pub(crate) struct CookieStore(pub(crate) ::cookie_store::CookieStore);
-
-impl<'a> fmt::Debug for CookieStore {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        self.0.fmt(f)
     }
 }

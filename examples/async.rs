@@ -8,10 +8,11 @@ use std::mem;
 use std::io::{self, Cursor};
 use futures::{Future, Stream};
 use reqwest::async::{Client, Decoder};
+use reqwest::cookie::NullSession;
 
 
 fn fetch() -> impl Future<Item=(), Error=()> {
-    Client::new()
+    Client::<NullSession>::new()
         .get("https://hyper.rs")
         .send()
         .and_then(|mut res| {

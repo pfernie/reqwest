@@ -8,6 +8,7 @@ use serde_urlencoded;
 
 use super::body::{Body};
 use super::client::{Client, Pending};
+use cookie::CookieStorage;
 use super::multipart;
 use super::response::Response;
 use header::{CONTENT_LENGTH, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
@@ -23,8 +24,8 @@ pub struct Request {
 }
 
 /// A builder to construct the properties of a `Request`.
-pub struct RequestBuilder {
-    client: Client,
+pub struct RequestBuilder<S : CookieStorage> {
+    client: Client<S>,
     request: ::Result<Request>,
 }
 
@@ -93,8 +94,8 @@ impl Request {
     }
 }
 
-impl RequestBuilder {
-    pub(super) fn new(client: Client, request: ::Result<Request>) -> RequestBuilder {
+impl<S : CookieStorage> RequestBuilder<S> {
+    pub(super) fn new<T : CookieStorage>(client: Client<T>, request: ::Result<Request>) -> RequestBuilder<T> {
         RequestBuilder {
             client,
             request,
@@ -102,7 +103,7 @@ impl RequestBuilder {
     }
 
     /// Add a `Header` to this Request.
-    pub fn header<K, V>(mut self, key: K, value: V) -> RequestBuilder
+    pub fn header<K, V>(mut self, key: K, value: V) -> RequestBuilder<S>
     where
         HeaderName: HttpTryFrom<K>,
         HeaderValue: HttpTryFrom<V>,
@@ -128,7 +129,7 @@ impl RequestBuilder {
     /// Add a set of Headers to the existing ones on this Request.
     ///
     /// The headers will be merged in to any already set.
-    pub fn headers(mut self, headers: ::header::HeaderMap) -> RequestBuilder {
+    pub fn headers(mut self, headers: ::header::HeaderMap) -> RequestBuilder<S> {
         if let Ok(ref mut req) = self.request {
             replace_headers(req.headers_mut(), headers);
         }
@@ -140,7 +141,7 @@ impl RequestBuilder {
     /// This method is provided to ease migration, and requires the `hyper-011`
     /// Cargo feature enabled on `reqwest`.
     #[cfg(feature = "hyper-011")]
-    pub fn header_011<H>(self, header: H) -> RequestBuilder
+    pub fn header_011<H>(self, header: H) -> RequestBuilder<S>
     where
         H: ::hyper_011::header::Header,
     {
@@ -155,13 +156,13 @@ impl RequestBuilder {
     /// This method is provided to ease migration, and requires the `hyper-011`
     /// Cargo feature enabled on `reqwest`.
     #[cfg(feature = "hyper-011")]
-    pub fn headers_011(self, headers: ::hyper_011::Headers) -> RequestBuilder {
+    pub fn headers_011(self, headers: ::hyper_011::Headers) -> RequestBuilder<S> {
         let map = ::header::HeaderMap::from(headers);
         self.headers(map)
     }
 
     /// Enable HTTP basic authentication.
-    pub fn basic_auth<U, P>(self, username: U, password: Option<P>) -> RequestBuilder
+    pub fn basic_auth<U, P>(self, username: U, password: Option<P>) -> RequestBuilder<S>
     where
         U: fmt::Display,
         P: fmt::Display,
@@ -175,7 +176,7 @@ impl RequestBuilder {
     }
 
     /// Enable HTTP bearer authentication.
-    pub fn bearer_auth<T>(self, token: T) -> RequestBuilder
+    pub fn bearer_auth<T>(self, token: T) -> RequestBuilder<S>
     where
         T: fmt::Display,
     {
@@ -184,7 +185,7 @@ impl RequestBuilder {
     }
 
     /// Set the request body.
-    pub fn body<T: Into<Body>>(mut self, body: T) -> RequestBuilder {
+    pub fn body<T: Into<Body>>(mut self, body: T) -> RequestBuilder<S> {
         if let Ok(ref mut req) = self.request {
             *req.body_mut() = Some(body.into());
         }
@@ -198,10 +199,11 @@ impl RequestBuilder {
     /// # extern crate reqwest;
     ///
     /// # use reqwest::Error;
+    /// # use reqwest::cookie::NullSession;
     /// # use futures::future::Future;
     ///
     /// # fn run() -> Result<(), Error> {
-    /// let client = reqwest::async::Client::new();
+    /// let client = reqwest::async::Client::<NullSession>::new();
     /// let form = reqwest::async::multipart::Form::new()
     ///     .text("key3", "value3")
     ///     .text("key4", "value4");
@@ -218,7 +220,7 @@ impl RequestBuilder {
     /// rt.block_on(response)
     /// # }
     /// ```
-    pub fn multipart(self, mut multipart: multipart::Form) -> RequestBuilder {
+    pub fn multipart(self, mut multipart: multipart::Form) -> RequestBuilder<S> {
         let mut builder = self.header(
             CONTENT_TYPE,
             format!(
@@ -256,7 +258,7 @@ impl RequestBuilder {
     /// # Errors
     /// This method will fail if the object you provide cannot be serialized
     /// into a query string.
-    pub fn query<T: Serialize + ?Sized>(mut self, query: &T) -> RequestBuilder {
+    pub fn query<T: Serialize + ?Sized>(mut self, query: &T) -> RequestBuilder<S> {
         let mut error = None;
         if let Ok(ref mut req) = self.request {
             let url = req.url_mut();
@@ -279,7 +281,7 @@ impl RequestBuilder {
     }
 
     /// Send a form body.
-    pub fn form<T: Serialize + ?Sized>(mut self, form: &T) -> RequestBuilder {
+    pub fn form<T: Serialize + ?Sized>(mut self, form: &T) -> RequestBuilder<S> {
         let mut error = None;
         if let Ok(ref mut req) = self.request {
             match serde_urlencoded::to_string(form) {
@@ -305,7 +307,7 @@ impl RequestBuilder {
     ///
     /// Serialization can fail if `T`'s implementation of `Serialize` decides to
     /// fail, or if `T` contains a map with non-string keys.
-    pub fn json<T: Serialize + ?Sized>(mut self, json: &T) -> RequestBuilder {
+    pub fn json<T: Serialize + ?Sized>(mut self, json: &T) -> RequestBuilder<S> {
         let mut error = None;
         if let Ok(ref mut req) = self.request {
             match serde_json::to_vec(json) {
@@ -346,10 +348,11 @@ impl RequestBuilder {
     /// # extern crate reqwest;
     /// #
     /// # use reqwest::Error;
+    /// # use reqwest::cookie::NullSession;
     /// # use futures::future::Future;
     /// #
     /// # fn run() -> Result<(), Error> {
-    /// let response = reqwest::r#async::Client::new()
+    /// let response = reqwest::r#async::Client::<NullSession>::new()
     ///     .get("https://hyper.rs")
     ///     .send()
     ///     .map(|resp| println!("status: {}", resp.status()));
@@ -373,7 +376,7 @@ impl fmt::Debug for Request {
     }
 }
 
-impl fmt::Debug for RequestBuilder {
+impl<S : CookieStorage> fmt::Debug for RequestBuilder<S> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let mut builder = f.debug_struct("RequestBuilder");
         match self.request {
@@ -427,11 +430,12 @@ pub(crate) fn replace_headers(dst: &mut HeaderMap, src: HeaderMap) {
 #[cfg(test)]
 mod tests {
     use super::Client;
+    use cookie::NullSession;
     use std::collections::BTreeMap;
 
     #[test]
     fn add_query_append() {
-        let client = Client::new();
+        let client = Client::<NullSession>::new();
         let some_url = "https://google.com/";
         let r = client.get(some_url);
 
@@ -444,7 +448,7 @@ mod tests {
 
     #[test]
     fn add_query_append_same() {
-        let client = Client::new();
+        let client = Client::<NullSession>::new();
         let some_url = "https://google.com/";
         let r = client.get(some_url);
 
@@ -462,7 +466,7 @@ mod tests {
             qux: i32,
         }
 
-        let client = Client::new();
+        let client = Client::<NullSession>::new();
         let some_url = "https://google.com/";
         let r = client.get(some_url);
 
@@ -480,7 +484,7 @@ mod tests {
         params.insert("foo", "bar");
         params.insert("qux", "three");
 
-        let client = Client::new();
+        let client = Client::<NullSession>::new();
         let some_url = "https://google.com/";
         let r = client.get(some_url);
 
@@ -498,7 +502,7 @@ mod tests {
         headers.insert("foo", "bar".parse().unwrap());
         headers.append("foo", "baz".parse().unwrap());
 
-        let client = Client::new();
+        let client = Client::<NullSession>::new();
         let req = client
             .get("https://hyper.rs")
             .header("im-a", "keeper")
@@ -521,7 +525,7 @@ mod tests {
 
     #[test]
     fn normalize_empty_query() {
-        let client = Client::new();
+        let client = Client::<NullSession>::new();
         let some_url = "https://google.com/";
         let empty_query: &[(&str, &str)] = &[];
 

@@ -9,6 +9,7 @@ extern crate serde_json;
 
 use futures::Future;
 use reqwest::async::{Client, Response};
+use reqwest::cookie::NullSession;
 
 #[derive(Deserialize, Debug)]
 struct Slideshow {
@@ -22,7 +23,7 @@ struct SlideshowContainer {
 }
 
 fn fetch() -> impl Future<Item=(), Error=()> {
-    let client = Client::new();
+    let client = Client::<NullSession>::new();
 
     let json = |mut res : Response | {
         res.json::<SlideshowContainer>()

@@ -15,6 +15,7 @@ use tokio::runtime::current_thread::Runtime;
 
 use reqwest::async::Client;
 use reqwest::async::multipart::{Form, Part};
+use reqwest::cookie::NullSession;
 
 #[test]
 fn gzip_response() {
@@ -83,7 +84,7 @@ fn multipart() {
 
     let mut rt = Runtime::new().expect("new rt");
 
-    let client = Client::new();
+    let client = Client::<NullSession>::new();
 
     let res_future = client.post(&url)
         .multipart(form)
@@ -122,7 +123,7 @@ fn request_timeout() {
 
     let mut rt = Runtime::new().expect("new rt");
 
-    let client = Client::builder()
+    let client = Client::<NullSession>::builder()
         .timeout(Duration::from_millis(500))
         .build()
         .unwrap();
@@ -162,7 +163,7 @@ fn response_timeout() {
 
     let mut rt = Runtime::new().expect("new rt");
 
-    let client = Client::builder()
+    let client = Client::<NullSession>::builder()
         .timeout(Duration::from_millis(500))
         .build()
         .unwrap();
@@ -213,7 +214,7 @@ fn gzip_case(response_size: usize, chunk_size: usize) {
 
     let mut rt = Runtime::new().expect("new rt");
 
-    let client = Client::new();
+    let client = Client::<NullSession>::new();
 
     let res_future = client.get(&format!("http://{}/gzip", server.addr()))
         .send()

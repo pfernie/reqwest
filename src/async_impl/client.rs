@@ -52,17 +52,26 @@ static DEFAULT_USER_AGENT: &'static str =
 ///
 /// The `Client` holds a connection pool internally, so it is advised that
 /// you create one and **reuse** it.
-#[derive(Clone)]
-pub struct Client {
-    inner: Arc<ClientRef>,
+// We (cannot derive Clone)[https://github.com/rust-lang/rust/issues/41481] when adding the generic, we must implement manually
+//#[derive(Clone)]
+pub struct Client<S : cookie::CookieStorage> {
+    inner: Arc<ClientRef<S>>,
+}
+
+impl<S : cookie::CookieStorage> Clone for Client<S> {
+    fn clone(&self) -> Self {
+        Client {
+            inner: self.inner.clone(),
+        }
+    }
 }
 
 /// A `ClientBuilder` can be used to create a `Client` with  custom configuration.
-pub struct ClientBuilder {
-    config: Config,
+pub struct ClientBuilder<S : cookie::CookieStorage> {
+    config: Config<S>,
 }
 
-struct Config {
+struct Config<S : cookie::CookieStorage> {
     gzip: bool,
     headers: HeaderMap,
     #[cfg(feature = "default-tls")]
@@ -85,14 +94,14 @@ struct Config {
     http1_title_case_headers: bool,
     local_address: Option<IpAddr>,
     nodelay: bool,
-    cookie_store: Option<cookie::CookieStore>,
+    session: Option<S>,
 }
 
-impl ClientBuilder {
+impl<S : cookie::CookieStorage> ClientBuilder<S> {
     /// Constructs a new `ClientBuilder`.
     ///
     /// This is the same as `Client::builder()`.
-    pub fn new() -> ClientBuilder {
+    pub fn new() -> ClientBuilder<cookie::NullSession> {
         let mut headers: HeaderMap<HeaderValue> = HeaderMap::with_capacity(2);
         headers.insert(USER_AGENT, HeaderValue::from_static(DEFAULT_USER_AGENT));
         headers.insert(ACCEPT, HeaderValue::from_str(mime::STAR_STAR.as_ref()).expect("unable to parse mime"));
@@ -121,7 +130,7 @@ impl ClientBuilder {
                 http1_title_case_headers: false,
                 local_address: None,
                 nodelay: false,
-                cookie_store: None,
+                session: None,
             },
         }
     }
@@ -132,7 +141,7 @@ impl ClientBuilder {
     ///
     /// This method fails if TLS backend cannot be initialized, or the resolver
     /// cannot load the system configuration.
-    pub fn build(self) -> ::Result<Client> {
+    pub fn build(self) -> ::Result<Client<S>> {
         let config = self.config;
         let proxies = Arc::new(config.proxies);
 
@@ -209,11 +218,11 @@ impl ClientBuilder {
             .iter()
             .any(|p| p.maybe_has_http_auth());
 
-        let cookie_store = RwLock::new(config.cookie_store);
+        let session = RwLock::new(config.session);
 
         Ok(Client {
             inner: Arc::new(ClientRef {
-                cookie_store,
+                session,
                 gzip: config.gzip,
                 hyper: hyper_client,
                 headers: config.headers,
@@ -227,21 +236,21 @@ impl ClientBuilder {
     }
 
     /// Set that all sockets have `SO_NODELAY` set to `true`.
-    pub fn tcp_nodelay(mut self) -> ClientBuilder {
+    pub fn tcp_nodelay(mut self) -> ClientBuilder<S> {
         self.config.nodelay = true;
         self
     }
 
     /// Use native TLS backend.
     #[cfg(feature = "default-tls")]
-    pub fn use_default_tls(mut self) -> ClientBuilder {
+    pub fn use_default_tls(mut self) -> ClientBuilder<S> {
         self.config.tls = TlsBackend::Default;
         self
     }
 
     /// Use rustls TLS backend.
     #[cfg(feature = "rustls-tls")]
-    pub fn use_rustls_tls(mut self) -> ClientBuilder {
+    pub fn use_rustls_tls(mut self) -> ClientBuilder<S> {
         self.config.tls = TlsBackend::Rustls;
         self
     }
@@ -251,14 +260,14 @@ impl ClientBuilder {
     /// This can be used to connect to a server that has a self-signed
     /// certificate for example.
     #[cfg(feature = "tls")]
-    pub fn add_root_certificate(mut self, cert: Certificate) -> ClientBuilder {
+    pub fn add_root_certificate(mut self, cert: Certificate) -> ClientBuilder<S> {
         self.config.root_certs.push(cert);
         self
     }
 
     /// Sets the identity to be used for client certificate authentication.
     #[cfg(feature = "tls")]
-    pub fn identity(mut self, identity: Identity) -> ClientBuilder {
+    pub fn identity(mut self, identity: Identity) -> ClientBuilder<S> {
         self.config.identity = Some(identity);
         self
     }
@@ -274,7 +283,7 @@ impl ClientBuilder {
     /// site will be trusted for use from any other. This introduces a
     /// significant vulnerability to man-in-the-middle attacks.
     #[cfg(feature = "default-tls")]
-    pub fn danger_accept_invalid_hostnames(mut self, accept_invalid_hostname: bool) -> ClientBuilder {
+    pub fn danger_accept_invalid_hostnames(mut self, accept_invalid_hostname: bool) -> ClientBuilder<S> {
         self.config.hostname_verification = !accept_invalid_hostname;
         self
     }
@@ -291,14 +300,14 @@ impl ClientBuilder {
     /// introduces significant vulnerabilities, and should only be used
     /// as a last resort.
     #[cfg(feature = "tls")]
-    pub fn danger_accept_invalid_certs(mut self, accept_invalid_certs: bool) -> ClientBuilder {
+    pub fn danger_accept_invalid_certs(mut self, accept_invalid_certs: bool) -> ClientBuilder<S> {
         self.config.certs_verification = !accept_invalid_certs;
         self
     }
 
 
     /// Sets the default headers for every request.
-    pub fn default_headers(mut self, headers: HeaderMap) -> ClientBuilder {
+    pub fn default_headers(mut self, headers: HeaderMap) -> ClientBuilder<S> {
         for (key, value) in headers.iter() {
             self.config.headers.insert(key, value.clone());
         }
@@ -316,13 +325,13 @@ impl ClientBuilder {
     ///   headers' set. The body is automatically deinflated.
     ///
     /// Default is enabled.
-    pub fn gzip(mut self, enable: bool) -> ClientBuilder {
+    pub fn gzip(mut self, enable: bool) -> ClientBuilder<S> {
         self.config.gzip = enable;
         self
     }
 
     /// Add a `Proxy` to the list of proxies the `Client` will use.
-    pub fn proxy(mut self, proxy: Proxy) -> ClientBuilder {
+    pub fn proxy(mut self, proxy: Proxy) -> ClientBuilder<S> {
         self.config.proxies.push(proxy);
         self
     }
@@ -330,7 +339,7 @@ impl ClientBuilder {
     /// Set a `RedirectPolicy` for this client.
     ///
     /// Default will follow redirects up to a maximum of 10.
-    pub fn redirect(mut self, policy: RedirectPolicy) -> ClientBuilder {
+    pub fn redirect(mut self, policy: RedirectPolicy) -> ClientBuilder<S> {
         self.config.redirect_policy = policy;
         self
     }
@@ -338,7 +347,7 @@ impl ClientBuilder {
     /// Enable or disable automatic setting of the `Referer` header.
     ///
     /// Default is `true`.
-    pub fn referer(mut self, enable: bool) -> ClientBuilder {
+    pub fn referer(mut self, enable: bool) -> ClientBuilder<S> {
         self.config.referer = enable;
         self
     }
@@ -349,7 +358,7 @@ impl ClientBuilder {
     /// until the response body has finished.
     ///
     /// Default is no timeout.
-    pub fn timeout(mut self, timeout: Duration) -> ClientBuilder {
+    pub fn timeout(mut self, timeout: Duration) -> ClientBuilder<S> {
         self.config.timeout = Some(timeout);
         self
     }
@@ -357,19 +366,19 @@ impl ClientBuilder {
     /// Sets the maximum idle connection per host allowed in the pool.
     ///
     /// Default is usize::MAX (no limit).
-    pub fn max_idle_per_host(mut self, max: usize) -> ClientBuilder {
+    pub fn max_idle_per_host(mut self, max: usize) -> ClientBuilder<S> {
         self.config.max_idle_per_host = max;
         self
     }
 
     /// Only use HTTP/2.
-    pub fn h2_prior_knowledge(mut self) -> ClientBuilder {
+    pub fn h2_prior_knowledge(mut self) -> ClientBuilder<S> {
         self.config.http2_only = true;
         self
     }
 
     /// Enable case sensitive headers.
-    pub fn http1_title_case_headers(mut self) -> ClientBuilder {
+    pub fn http1_title_case_headers(mut self) -> ClientBuilder<S> {
         self.config.http1_title_case_headers = true;
         self
     }
@@ -382,19 +391,19 @@ impl ClientBuilder {
     ///
     /// This **requires** the futures be executed in a tokio runtime with
     /// a tokio timer enabled.
-    pub fn connect_timeout(mut self, timeout: Duration) -> ClientBuilder {
+    pub fn connect_timeout(mut self, timeout: Duration) -> ClientBuilder<S> {
         self.config.connect_timeout = Some(timeout);
         self
     }
 
     #[doc(hidden)]
     #[deprecated(note = "DNS no longer uses blocking threads")]
-    pub fn dns_threads(self, _threads: usize) -> ClientBuilder {
+    pub fn dns_threads(self, _threads: usize) -> ClientBuilder<S> {
         self
     }
 
     /// Bind to a local IP Address
-    pub fn local_address<T>(mut self, addr: T) -> ClientBuilder
+    pub fn local_address<T>(mut self, addr: T) -> ClientBuilder<S>
     where
         T: Into<Option<IpAddr>>,
     {
@@ -402,21 +411,43 @@ impl ClientBuilder {
         self
     }
 
-    /// Set a persistent cookie store for the client.
-    ///
-    /// Cookies received in responses will be preserved and included in
-    /// additional requests.
-    ///
-    /// By default, no cookie store is used.
-    pub fn cookie_store(mut self, cookie_store: cookie_store::CookieStore) -> ClientBuilder {
-        self.config.cookie_store = Some(cookie::CookieStore(cookie_store));
-        self
+    /// Set a session for cookie storage
+    pub fn session<T : cookie::CookieStorage>(self, session: T) -> ClientBuilder<T> {
+        ClientBuilder {
+           config: Config {
+               session: Some(session),
+
+               // copy over other configuration items
+               gzip: self.config.gzip,
+               headers: self.config.headers,
+               #[cfg(feature = "default-tls")]
+               hostname_verification: self.config.hostname_verification,
+               #[cfg(feature = "tls")]
+               certs_verification: self.config.certs_verification,
+               connect_timeout: self.config.connect_timeout,
+               max_idle_per_host: self.config.max_idle_per_host,
+               #[cfg(feature = "tls")]
+               identity: self.config.identity,
+               proxies: self.config.proxies,
+               redirect_policy: self.config.redirect_policy,
+               referer: self.config.referer,
+               timeout: self.config.timeout,
+               #[cfg(feature = "tls")]
+               root_certs: self.config.root_certs,
+               #[cfg(feature = "tls")]
+               tls: self.config.tls,
+               http2_only: self.config.http2_only,
+               http1_title_case_headers: self.config.http1_title_case_headers,
+               local_address: self.config.local_address,
+               nodelay: self.config.nodelay,
+           }
+        }
     }
 }
 
 type HyperClient = ::hyper::Client<Connector>;
 
-impl Client {
+impl<S : cookie::CookieStorage> Client<S> {
     /// Constructs a new `Client`.
     ///
     /// # Panics
@@ -426,8 +457,8 @@ impl Client {
     ///
     /// Use `Client::builder()` if you wish to handle the failure as an `Error`
     /// instead of panicking.
-    pub fn new() -> Client {
-        ClientBuilder::new()
+    pub fn new() -> Client<cookie::NullSession> {
+        ClientBuilder::<cookie::NullSession>::new()
             .build()
             .expect("Client::new()")
     }
@@ -435,8 +466,8 @@ impl Client {
     /// Creates a `ClientBuilder` to configure a `Client`.
     ///
     /// This is the same as `ClientBuilder::new()`.
-    pub fn builder() -> ClientBuilder {
-        ClientBuilder::new()
+    pub fn builder() -> ClientBuilder<cookie::NullSession> {
+        ClientBuilder::<cookie::NullSession>::new()
     }
 
     /// Convenience method to make a `GET` request to a URL.
@@ -444,7 +475,7 @@ impl Client {
     /// # Errors
     ///
     /// This method fails whenever supplied `Url` cannot be parsed.
-    pub fn get<U: IntoUrl>(&self, url: U) -> RequestBuilder {
+    pub fn get<U: IntoUrl>(&self, url: U) -> RequestBuilder<S> {
         self.request(Method::GET, url)
     }
 
@@ -453,7 +484,7 @@ impl Client {
     /// # Errors
     ///
     /// This method fails whenever supplied `Url` cannot be parsed.
-    pub fn post<U: IntoUrl>(&self, url: U) -> RequestBuilder {
+    pub fn post<U: IntoUrl>(&self, url: U) -> RequestBuilder<S> {
         self.request(Method::POST, url)
     }
 
@@ -462,7 +493,7 @@ impl Client {
     /// # Errors
     ///
     /// This method fails whenever supplied `Url` cannot be parsed.
-    pub fn put<U: IntoUrl>(&self, url: U) -> RequestBuilder {
+    pub fn put<U: IntoUrl>(&self, url: U) -> RequestBuilder<S> {
         self.request(Method::PUT, url)
     }
 
@@ -471,7 +502,7 @@ impl Client {
     /// # Errors
     ///
     /// This method fails whenever supplied `Url` cannot be parsed.
-    pub fn patch<U: IntoUrl>(&self, url: U) -> RequestBuilder {
+    pub fn patch<U: IntoUrl>(&self, url: U) -> RequestBuilder<S> {
         self.request(Method::PATCH, url)
     }
 
@@ -480,7 +511,7 @@ impl Client {
     /// # Errors
     ///
     /// This method fails whenever supplied `Url` cannot be parsed.
-    pub fn delete<U: IntoUrl>(&self, url: U) -> RequestBuilder {
+    pub fn delete<U: IntoUrl>(&self, url: U) -> RequestBuilder<S> {
         self.request(Method::DELETE, url)
     }
 
@@ -489,7 +520,7 @@ impl Client {
     /// # Errors
     ///
     /// This method fails whenever supplied `Url` cannot be parsed.
-    pub fn head<U: IntoUrl>(&self, url: U) -> RequestBuilder {
+    pub fn head<U: IntoUrl>(&self, url: U) -> RequestBuilder<S> {
         self.request(Method::HEAD, url)
     }
 
@@ -501,11 +532,11 @@ impl Client {
     /// # Errors
     ///
     /// This method fails whenever supplied `Url` cannot be parsed.
-    pub fn request<U: IntoUrl>(&self, method: Method, url: U) -> RequestBuilder {
+    pub fn request<U: IntoUrl>(&self, method: Method, url: U) -> RequestBuilder<S> {
         let req = url
             .into_url()
             .map(move |url| Request::new(method, url));
-        RequestBuilder::new(self.clone(), req)
+        RequestBuilder::<S>::new((*self).clone(), req)
     }
 
     /// Executes a `Request`.
@@ -525,7 +556,7 @@ impl Client {
     }
 
 
-    pub(super) fn execute_request(&self, req: Request) -> Pending {
+    pub(super) fn execute_request(&self, req: Request) -> Pending<S> {
         let (
             method,
             url,
@@ -542,9 +573,9 @@ impl Client {
         }
 
         // Add cookies from the cookie store.
-        if let Some(cookie_store) = self.inner.cookie_store.read().unwrap().as_ref() {
+        if let Some(session) = self.inner.session.read().unwrap().as_ref() {
             if headers.get(::header::COOKIE).is_none() {
-                add_cookie_header(&mut headers, &cookie_store, &url);
+                add_cookie_header(&mut headers, session, &url);
             }
         }
 
@@ -599,38 +630,35 @@ impl Client {
         }
     }
 
-    /// Access any current `CookieStore` in the `Client` and modify it via `f`.
-    pub fn modify_cookie_store<F: Fn(&mut cookie_store::CookieStore)>(&self, f: F) {
+    /// Access the cookie store session for `Client`
+    pub fn modify_session<F: Fn(&mut S)>(&self, f: F) {
         self.inner
-            .cookie_store
+            .session
             .write()
             .unwrap()
             .as_mut()
-            .map(|cs| f(&mut cs.0));
+            .map(f);
     }
 
-    /// Replace any current `CookieStore` in the `Client`, returning the old store if it was
-    /// present
-    pub fn replace_cookie_store(
+    /// Replace the current cookie store session for `Client`, returning the previous
+    pub fn replace_session(
         &mut self,
-        new_store: cookie_store::CookieStore,
-    ) -> Option<cookie_store::CookieStore> {
+        new_session: S,
+    ) -> Option<S> {
         self.inner
-            .cookie_store
+            .session
             .write()
             .unwrap()
-            .replace(cookie::CookieStore(new_store))
-            .map(|old_store| old_store.0)
+            .replace(new_session)
     }
 
-    /// Remove any current `CookieStore` from the `Client`
-    pub fn take_cookie_store(&mut self) -> Option<cookie_store::CookieStore> {
+    /// Remove the current cookie store session
+    pub fn take_session(&mut self) -> Option<S> {
         self.inner
-            .cookie_store
+            .session
             .write()
             .unwrap()
             .take()
-            .map(|cs| cs.0)
     }
 
     fn proxy_auth(&self, dst: &Uri, headers: &mut HeaderMap) {
@@ -668,7 +696,7 @@ impl Client {
     }
 }
 
-impl fmt::Debug for Client {
+impl<S : cookie::CookieStorage> fmt::Debug for Client<S> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("Client")
             .field("gzip", &self.inner.gzip)
@@ -678,15 +706,15 @@ impl fmt::Debug for Client {
     }
 }
 
-impl fmt::Debug for ClientBuilder {
+impl<S : cookie::CookieStorage> fmt::Debug for ClientBuilder<S> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("ClientBuilder")
             .finish()
     }
 }
 
-struct ClientRef {
-    cookie_store: RwLock<Option<cookie::CookieStore>>,
+struct ClientRef<S : cookie::CookieStorage> {
+    session: RwLock<Option<S>>,
     gzip: bool,
     headers: HeaderMap,
     hyper: HyperClient,
@@ -697,16 +725,16 @@ struct ClientRef {
     proxies_maybe_http_auth: bool,
 }
 
-pub(super) struct Pending {
-    inner: PendingInner,
+pub(super) struct Pending<S : cookie::CookieStorage> {
+    inner: PendingInner<S>,
 }
 
-enum PendingInner {
-    Request(PendingRequest),
+enum PendingInner<S : cookie::CookieStorage> {
+    Request(PendingRequest<S>),
     Error(Option<::Error>),
 }
 
-struct PendingRequest {
+struct PendingRequest<S : cookie::CookieStorage> {
     method: Method,
     url: Url,
     headers: HeaderMap,
@@ -714,21 +742,21 @@ struct PendingRequest {
 
     urls: Vec<Url>,
 
-    client: Arc<ClientRef>,
+    client: Arc<ClientRef<S>>,
 
     in_flight: ResponseFuture,
     timeout: Option<Delay>,
 }
 
-impl Pending {
-    pub(super) fn new_err(err: ::Error) -> Pending {
+impl<S : cookie::CookieStorage> Pending<S> {
+    pub(super) fn new_err(err: ::Error) -> Pending<S> {
         Pending {
             inner: PendingInner::Error(Some(err)),
         }
     }
 }
 
-impl Future for Pending {
+impl<S : cookie::CookieStorage> Future for Pending<S> {
     type Item = Response;
     type Error = ::Error;
 
@@ -740,7 +768,7 @@ impl Future for Pending {
     }
 }
 
-impl Future for PendingRequest {
+impl<S : cookie::CookieStorage> Future for PendingRequest<S> {
     type Item = Response;
     type Error = ::Error;
 
@@ -756,11 +784,11 @@ impl Future for PendingRequest {
                 Async::Ready(res) => res,
                 Async::NotReady => return Ok(Async::NotReady),
             };
-            if let Some(store) = self.client.cookie_store.write().unwrap().as_mut() {
+            if let Some(session) = self.client.session.write().unwrap().as_mut() {
                 let cookies = cookie::extract_response_cookies(&res.headers())
                     .filter_map(|res| res.ok())
                     .map(|cookie| cookie.into_inner().into_owned());
-                store.0.store_response_cookies(cookies, &self.url);
+                session.store_response_cookies(cookies, &self.url);
             }
             let should_redirect = match res.status() {
                 StatusCode::MOVED_PERMANENTLY |
@@ -844,8 +872,8 @@ impl Future for PendingRequest {
                                 .expect("valid request parts");
 
                             // Add cookies from the cookie store.
-                            if let Some(cookie_store) = self.client.cookie_store.read().unwrap().as_ref() {
-                                add_cookie_header(&mut self.headers, &cookie_store, &self.url);
+                            if let Some(session) = self.client.session.read().unwrap().as_ref() {
+                                add_cookie_header(&mut self.headers, session, &self.url);
                             }
 
                             *req.headers_mut() = self.headers.clone();
@@ -870,7 +898,7 @@ impl Future for PendingRequest {
     }
 }
 
-impl fmt::Debug for Pending {
+impl<S : cookie::CookieStorage> fmt::Debug for Pending<S> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self.inner {
             PendingInner::Request(ref req) => {
@@ -900,9 +928,8 @@ fn make_referer(next: &Url, previous: &Url) -> Option<HeaderValue> {
     referer.as_str().parse().ok()
 }
 
-fn add_cookie_header(headers: &mut HeaderMap, cookie_store: &cookie::CookieStore, url: &Url) {
-    let header = cookie_store
-        .0
+fn add_cookie_header<R : cookie::CookieStorageReader>(headers: &mut HeaderMap, session: R, url: &Url) {
+    let header = session
         .get_request_cookies(url)
         .map(|c| c.encoded().to_string())
         .collect::<Vec<_>>()

@@ -8,6 +8,7 @@ use futures::{Async, Future, Stream};
 use futures::future::{self, Either};
 use futures::sync::{mpsc, oneshot};
 
+use cookie::{CookieStorage, NullSession};
 use request::{Request, RequestBuilder};
 use response::Response;
 use {async_impl, header, Method, IntoUrl, Proxy, RedirectPolicy, wait};
@@ -56,18 +57,18 @@ pub struct Client {
 /// # Ok(())
 /// # }
 /// ```
-pub struct ClientBuilder {
-    inner: async_impl::ClientBuilder,
+pub struct ClientBuilder<S : CookieStorage> {
+    inner: async_impl::ClientBuilder<S>,
     timeout: Timeout,
 }
 
-impl ClientBuilder {
+impl<S : CookieStorage + 'static> ClientBuilder<S> {
     /// Constructs a new `ClientBuilder`.
     ///
     /// This is the same as `Client::builder()`.
-    pub fn new() -> ClientBuilder {
+    pub fn new() -> ClientBuilder<NullSession> {
         ClientBuilder {
-            inner: async_impl::ClientBuilder::new(),
+            inner: async_impl::ClientBuilder::<NullSession>::new(),
             timeout: Timeout::default(),
         }
     }
@@ -85,19 +86,19 @@ impl ClientBuilder {
     }
 
     /// Set that all sockets have `SO_NODELAY` set to `true`.
-    pub fn tcp_nodelay(self) -> ClientBuilder {
+    pub fn tcp_nodelay(self) -> ClientBuilder<S> {
         self.with_inner(move |inner| inner.tcp_nodelay())
     }
 
     /// Use native TLS backend.
     #[cfg(feature = "default-tls")]
-    pub fn use_default_tls(self) -> ClientBuilder {
+    pub fn use_default_tls(self) -> ClientBuilder<S> {
         self.with_inner(move |inner| inner.use_default_tls())
     }
 
     /// Use rustls TLS backend.
     #[cfg(feature = "rustls-tls")]
-    pub fn use_rustls_tls(self) -> ClientBuilder {
+    pub fn use_rustls_tls(self) -> ClientBuilder<S> {
         self.with_inner(move |inner| inner.use_rustls_tls())
     }
 
@@ -132,7 +133,7 @@ impl ClientBuilder {
     ///
     /// This method fails if adding root certificate was unsuccessful.
     #[cfg(feature = "tls")]
-    pub fn add_root_certificate(self, cert: Certificate) -> ClientBuilder {
+    pub fn add_root_certificate(self, cert: Certificate) -> ClientBuilder<S> {
         self.with_inner(move |inner| inner.add_root_certificate(cert))
     }
 
@@ -168,7 +169,7 @@ impl ClientBuilder {
     /// # }
     /// ```
     #[cfg(feature = "tls")]
-    pub fn identity(self, identity: Identity) -> ClientBuilder {
+    pub fn identity(self, identity: Identity) -> ClientBuilder<S> {
         self.with_inner(move |inner| inner.identity(identity))
     }
 
@@ -184,7 +185,7 @@ impl ClientBuilder {
     /// site will be trusted for use from any other. This introduces a
     /// significant vulnerability to man-in-the-middle attacks.
     #[cfg(feature = "default-tls")]
-    pub fn danger_accept_invalid_hostnames(self, accept_invalid_hostname: bool) -> ClientBuilder {
+    pub fn danger_accept_invalid_hostnames(self, accept_invalid_hostname: bool) -> ClientBuilder<S> {
         self.with_inner(|inner| inner.danger_accept_invalid_hostnames(accept_invalid_hostname))
     }
 
@@ -200,7 +201,7 @@ impl ClientBuilder {
     /// introduces significant vulnerabilities, and should only be used
     /// as a last resort.
     #[cfg(feature = "tls")]
-    pub fn danger_accept_invalid_certs(self, accept_invalid_certs: bool) -> ClientBuilder {
+    pub fn danger_accept_invalid_certs(self, accept_invalid_certs: bool) -> ClientBuilder<S> {
         self.with_inner(|inner| inner.danger_accept_invalid_certs(accept_invalid_certs))
     }
 
@@ -242,7 +243,7 @@ impl ClientBuilder {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn default_headers(self, headers: header::HeaderMap) -> ClientBuilder {
+    pub fn default_headers(self, headers: header::HeaderMap) -> ClientBuilder<S> {
         self.with_inner(move |inner| inner.default_headers(headers))
     }
 
@@ -257,26 +258,26 @@ impl ClientBuilder {
     ///   headers' set. The body is automatically deinflated.
     ///
     /// Default is enabled.
-    pub fn gzip(self, enable: bool) -> ClientBuilder {
+    pub fn gzip(self, enable: bool) -> ClientBuilder<S> {
         self.with_inner(|inner| inner.gzip(enable))
     }
 
     /// Add a `Proxy` to the list of proxies the `Client` will use.
-    pub fn proxy(self, proxy: Proxy) -> ClientBuilder {
+    pub fn proxy(self, proxy: Proxy) -> ClientBuilder<S> {
         self.with_inner(move |inner| inner.proxy(proxy))
     }
 
     /// Set a `RedirectPolicy` for this client.
     ///
     /// Default will follow redirects up to a maximum of 10.
-    pub fn redirect(self, policy: RedirectPolicy) -> ClientBuilder {
+    pub fn redirect(self, policy: RedirectPolicy) -> ClientBuilder<S> {
         self.with_inner(move |inner| inner.redirect(policy))
     }
 
     /// Enable or disable automatic setting of the `Referer` header.
     ///
     /// Default is `true`.
-    pub fn referer(self, enable: bool) -> ClientBuilder {
+    pub fn referer(self, enable: bool) -> ClientBuilder<S> {
         self.with_inner(|inner| inner.referer(enable))
     }
 
@@ -285,7 +286,7 @@ impl ClientBuilder {
     /// Default is 30 seconds.
     ///
     /// Pass `None` to disable timeout.
-    pub fn timeout<T>(mut self, timeout: T) -> ClientBuilder
+    pub fn timeout<T>(mut self, timeout: T) -> ClientBuilder<S>
     where
         T: Into<Option<Duration>>,
     {
@@ -296,14 +297,14 @@ impl ClientBuilder {
     /// Sets the maximum idle connection per host allowed in the pool.
     ///
     /// Default is usize::MAX (no limit).
-    pub fn max_idle_per_host(self, max: usize) -> ClientBuilder {
+    pub fn max_idle_per_host(self, max: usize) -> ClientBuilder<S> {
         self.with_inner(move |inner| inner.max_idle_per_host(max))
     }
 
     /// Set a timeout for only the connect phase of a `Client`.
     ///
     /// Default is `None`.
-    pub fn connect_timeout<T>(self, timeout: T) -> ClientBuilder
+    pub fn connect_timeout<T>(self, timeout: T) -> ClientBuilder<S>
     where
         T: Into<Option<Duration>>,
     {
@@ -315,12 +316,14 @@ impl ClientBuilder {
         }
     }
 
-    fn with_inner<F>(mut self, func: F) -> ClientBuilder
+    fn with_inner<F, R : CookieStorage>(self, func: F) -> ClientBuilder<R>
     where
-        F: FnOnce(async_impl::ClientBuilder) -> async_impl::ClientBuilder,
+        F: FnOnce(async_impl::ClientBuilder<S>) -> async_impl::ClientBuilder<R>,
     {
-        self.inner = func(self.inner);
-        self
+        ClientBuilder {
+            inner: func(self.inner),
+            timeout: self.timeout,
+        }
     }
 
     /// Only use HTTP/2.
@@ -332,7 +335,7 @@ impl ClientBuilder {
     ///     .h2_prior_knowledge()
     ///     .build().unwrap();
     /// ```
-    pub fn h2_prior_knowledge(self) -> ClientBuilder {
+    pub fn h2_prior_knowledge(self) -> ClientBuilder<S> {
         self.with_inner(|inner| inner.h2_prior_knowledge())
     }
 
@@ -345,7 +348,7 @@ impl ClientBuilder {
     ///     .http1_title_case_headers()
     ///     .build().unwrap();
     /// ```
-    pub fn http1_title_case_headers(self) -> ClientBuilder {
+    pub fn http1_title_case_headers(self) -> ClientBuilder<S> {
         self.with_inner(|inner| inner.http1_title_case_headers())
     }
 
@@ -360,21 +363,21 @@ impl ClientBuilder {
     ///     .local_address(local_addr)
     ///     .build().unwrap();
     /// ```
-    pub fn local_address<T>(self, addr: T) -> ClientBuilder
+    pub fn local_address<T>(self, addr: T) -> ClientBuilder<S>
     where
         T: Into<Option<IpAddr>>,
     {
         self.with_inner(move |inner| inner.local_address(addr))
     }
 
-    /// Set a persistent cookie store for the client.
+    /// Set a cookie storage session for the client
     ///
     /// Cookies received in responses will be preserved and included in
     /// additional requests.
     ///
-    /// By default, no cookie store is used.
-    pub fn cookie_store(self, cookie_store: cookie_store::CookieStore) -> ClientBuilder {
-        self.with_inner(|inner| inner.cookie_store(cookie_store))
+    /// By default, a `NullSession` is used, which stores no cookies.
+    pub fn session<T : CookieStorage>(self, session : T) -> ClientBuilder<T> {
+        self.with_inner(|inner| inner.session(session))
     }
 }
 
@@ -390,7 +393,7 @@ impl Client {
     /// Use `Client::builder()` if you wish to handle the failure as an `Error`
     /// instead of panicking.
     pub fn new() -> Client {
-        ClientBuilder::new()
+        ClientBuilder::<NullSession>::new()
             .build()
             .expect("Client::new()")
     }
@@ -398,8 +401,8 @@ impl Client {
     /// Creates a `ClientBuilder` to configure a `Client`.
     ///
     /// This is the same as `ClientBuilder::new()`.
-    pub fn builder() -> ClientBuilder {
-        ClientBuilder::new()
+    pub fn builder() -> ClientBuilder<NullSession> {
+        ClientBuilder::<NullSession>::new()
     }
 
     /// Convenience method to make a `GET` request to a URL.
@@ -498,7 +501,7 @@ impl fmt::Debug for Client {
     }
 }
 
-impl fmt::Debug for ClientBuilder {
+impl<S : CookieStorage> fmt::Debug for ClientBuilder<S> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("ClientBuilder")
             .finish()
@@ -526,7 +529,7 @@ impl Drop for InnerClientHandle {
 }
 
 impl ClientHandle {
-    fn new(builder: ClientBuilder) -> ::Result<ClientHandle> {
+    fn new<S : CookieStorage + 'static>(builder: ClientBuilder<S>) -> ::Result<ClientHandle> {
         let timeout = builder.timeout;
         let builder = builder.inner;
         let (tx, rx) = mpsc::unbounded();
